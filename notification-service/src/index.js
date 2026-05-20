@@ -1,15 +1,27 @@
 require('dotenv').config();
 const express = require('express');
-const amqp = require('amqplib');
+const { Kafka } = require('kafkajs');
 
 const app = express();
 const PORT = process.env.PORT || 3004;
-const RABBITMQ_URL = process.env.RABBITMQ_URL || 'amqp://guest:guest@localhost:5672';
-const QUEUE = 'order.placed';
+
+// Kafka connects using the container name "kafka" on port 9092
+// This works because all services share the same Docker network
+const kafka = new Kafka({
+  clientId: 'notification-service',
+  brokers: [process.env.KAFKA_BROKER || 'kafka:9092'],
+  retry: {
+    retries: 10,          // retry connecting up to 10 times
+    initialRetryTime: 3000 // wait 3 seconds between retries
+  }
+});
+
+// A "consumer" is what reads messages from Kafka
+// groupId groups multiple instances together — Kafka delivers each message to only one instance in the group
+const consumer = kafka.consumer({ groupId: 'notification-group' });
 
 app.use(express.json());
 
-// Health check endpoint
 app.get('/health', (req, res) => {
   res.json({ status: 'up', service: 'notification-service' });
 });
@@ -19,50 +31,39 @@ app.listen(PORT, () => {
   connectAndConsume();
 });
 
-// ─── RabbitMQ Consumer ────────────────────────────────────────────────────────
+// ─── Kafka Consumer ────────────────────────────────────────────────────────────
 
 async function connectAndConsume() {
-  // Retry loop — RabbitMQ may not be ready instantly on startup
-  let retries = 10;
-  while (retries > 0) {
-    try {
-      const connection = await amqp.connect(RABBITMQ_URL);
-      const channel    = await connection.createChannel();
+  try {
+    await consumer.connect();
+    console.log('✅ Connected to Kafka');
 
-      await channel.assertQueue(QUEUE, { durable: true });
-      console.log(`📥 Listening for messages on queue: ${QUEUE}`);
+    // Subscribe to the topic order-service will publish to
+    await consumer.subscribe({ topic: 'order.placed', fromBeginning: false });
+    console.log('📥 Listening for messages on topic: order.placed');
 
-      channel.consume(QUEUE, (msg) => {
-        if (!msg) return;
-
+    // This runs continuously — every message that arrives triggers this callback
+    await consumer.run({
+      eachMessage: async ({ topic, partition, message }) => {
         try {
-          const order = JSON.parse(msg.content.toString());
+          const order = JSON.parse(message.value.toString());
           handleOrderPlaced(order);
-          channel.ack(msg);
         } catch (err) {
           console.error('Failed to process message:', err.message);
-          channel.nack(msg, false, false); // discard bad message
         }
-      });
+      }
+    });
 
-      // Handle connection errors
-      connection.on('error', (err) => {
-        console.error('RabbitMQ connection error:', err.message);
-        setTimeout(connectAndConsume, 5000);
-      });
-
-      return; // Connected successfully, exit retry loop
-    } catch (err) {
-      retries--;
-      console.warn(`RabbitMQ not ready. Retrying... (${retries} left)`);
-      await new Promise(res => setTimeout(res, 5000));
-    }
+  } catch (err) {
+    console.error('Kafka connection failed:', err.message);
+    // Wait 5 seconds and retry — Kafka may still be starting up
+    setTimeout(connectAndConsume, 5000);
   }
-  console.error('Could not connect to RabbitMQ after multiple attempts.');
 }
 
+// ─── Notification Handler ──────────────────────────────────────────────────────
+
 function handleOrderPlaced(order) {
-  // In production: send email via SendGrid, Nodemailer, etc.
   console.log('─'.repeat(50));
   console.log('📧 NEW ORDER NOTIFICATION');
   console.log(`   Order ID  : ${order.id}`);
@@ -72,5 +73,4 @@ function handleOrderPlaced(order) {
   console.log(`   Total     : $${order.totalPrice}`);
   console.log(`   Status    : ${order.status}`);
   console.log('─'.repeat(50));
-  // TODO: integrate with email provider here
 }
