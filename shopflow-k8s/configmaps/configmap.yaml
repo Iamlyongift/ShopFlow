@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: shopflow-config
+  namespace: shopflow
+data:
+  KAFKA_BOOTSTRAP_SERVERS: "kafka.shopflow-infra.svc.cluster.local:9092"
+  DB_HOST: "postgres.shopflow-infra.svc.cluster.local"
+  DB_PORT: "5432"
+  DB_NAME: "shopflow"
+  AUTH_SERVICE_URL: "http://auth-service.shopflow.svc.cluster.local:3005"

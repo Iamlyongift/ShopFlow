@@ -47,7 +47,7 @@ public class OrderController {
         return ResponseEntity.ok(saved);
     }
 
-    @PostMapping("/{id}")
+    @GetMapping("/{id}")
     public ResponseEntity<Order> getOrdersByUser(@PathVariable Long id) {
          return orderService.getOrderById(id)
                  .map(ResponseEntity::ok)
